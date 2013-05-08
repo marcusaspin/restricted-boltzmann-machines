@@ -17,7 +17,7 @@ var RBM;
 
     /**
      * Train the machine.
-     * 
+     *
      * @param data A matrix where each row is a training example consisting of the states of visible units.
      * @param max_epochs
      */
@@ -274,8 +274,8 @@ var RBM;
         },
         sum = function(a){
             if(!(a instanceof Array)) return a;
-            for(var i = 0, sum = 0, l = a.length; i < l; i++) sum += sum(a[i]);
-            return sum;
+            for(var i = 0, s = 0, l = a.length; i < l; i++) s += sum(a[i]);
+            return s;
         },
         each = function(operation){
             if(arguments.length <= 1) return null;
