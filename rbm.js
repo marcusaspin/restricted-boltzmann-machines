@@ -1,5 +1,8 @@
 var RBM;
 (function(){
+    // Check if running in Web Worker
+    var inWorker = (self.constructor.toString().indexOf("Worker") !== -1);
+
     RBM = function(num_visible, num_hidden, learning_rate){
         this.num_hidden = num_hidden;
         this.num_visible = num_visible;
@@ -22,6 +25,7 @@ var RBM;
      * @param max_epochs
      */
     RBM.prototype.train = function(data, max_epochs){
+        data = JSON.parse(JSON.stringify(data));   // Don't edit original array
         var self = this, error,
             num_examples = data.length,
             pos_hidden_activations, pos_hidden_probs, pos_hidden_states,
@@ -65,7 +69,20 @@ var RBM;
             }, pos_associations, neg_associations, self.weights);
 
             error = sum(each(function(a, b){ return (a - b) * (a - b) }, data, neg_visible_probs));
-            console.log("Epoch %s: error is %s", epoch, error);
+            if(inWorker){
+                SELF.postMessage({
+                    progress_update: (100*(epoch+1)/max_epochs) + "%",
+                    error: error
+                })
+            } else {
+                console.log("Epoch %s: error is %s", epoch, error);
+            }
+        }
+        if(inWorker){
+            SELF.postMessage({
+                passback: worker_passback,
+                result: self.weights
+            })
         }
     };
 
@@ -77,6 +94,7 @@ var RBM;
      * @return hidden_states A matrix where each row consists of the hidden units activated from the visible
      */
     RBM.prototype.run_visible = function(data){
+        data = JSON.parse(JSON.stringify(data));   // Don't edit original array
         var self = this,
             num_examples = data.length,
             hidden_states, hidden_activations, hidden_probs;
@@ -103,6 +121,14 @@ var RBM;
 
     // Ignore the bias units.
         for(i = 0; i < hidden_states.length; i++) hidden_states[i].shift();
+
+        if(inWorker){
+            SELF.postMessage({
+                passback: worker_passback,
+                result: hidden_states
+            })
+        }
+
         return hidden_states
     };
     /**
@@ -114,6 +140,7 @@ var RBM;
      * units in the data matrix passed in.
      */
     RBM.prototype.run_hidden = function(data){
+        data = JSON.parse(JSON.stringify(data));   // Don't edit original array
         var self = this,
             num_examples = data.length,
             visible_states, visible_activations, visible_probs;
@@ -140,6 +167,14 @@ var RBM;
 
     // Ignore the bias units.
         for(i = 0; i < visible_states.length; i++) visible_states[i].shift();
+
+        if(inWorker){
+            SELF.postMessage({
+                passback: worker_passback,
+                result: visible_states
+            })
+        }
+
         return visible_states
     };
 
@@ -194,6 +229,13 @@ var RBM;
     // Ignore the bias units (the first column), since they're always set to 1.
         for(i = 0; i < num_samples; i++) samples[i].shift();
 
+        if(inWorker){
+            SELF.postMessage({
+                passback: worker_passback,
+                result: samples
+            })
+        }
+
         return samples;
     };
 
@@ -207,17 +249,17 @@ var RBM;
             var ah = a.length, bh = b.length,
                 aw = a[0].length, bw = b[0].length;
 
-            if(typeof aw == "undefined"){
-                a = a.map(function(x){return [x]});
+            if(typeof aw === "undefined"){
+                a = each(function(x){return [x]}, a);
                 aw = 1;
             }
-            if(typeof bw == "undefined"){
-                b = b.map(function(x){return [x]});
+            if(typeof bw === "undefined"){
+                b = each(function(x){return [x]}, a);
                 bw = 1;
             }
 
             if (aw != bh) {
-                if(ah == bh){   // try multiplying flipped matrix
+                if(ah === bh){   // try multiplying flipped matrix
                     a = transpose(a);
                     aw = ah;
                     ah = a.length;
@@ -252,21 +294,21 @@ var RBM;
             return t;
         },
         ones = function(){
-            if(typeof arguments[0] == "undefined") return 1;
+            if(typeof arguments[0] === "undefined") return 1;
             for(var i = 0, arr = []; i < arguments[0]; i++){
                 arr.push(ones.apply(this, Array.prototype.slice.call(arguments, 1)));
             }
             return arr;
         },
         randn = function(){ // Box-Muller - too slow?
-            if(typeof arguments[0] == "undefined") return Math.sqrt(-2*Math.log(Math.random()))*Math.cos(2*Math.PI*Math.random());
+            if(typeof arguments[0] === "undefined") return Math.sqrt(-2*Math.log(Math.random()))*Math.cos(2*Math.PI*Math.random());
             for(var i = 0, arr = []; i < arguments[0]; i++){
                 arr.push(randn.apply(this, Array.prototype.slice.call(arguments, 1)));
             }
             return arr;
         },
         rand = function(){
-            if(typeof arguments[0] == "undefined") return Math.random();
+            if(typeof arguments[0] === "undefined") return Math.random();
             for(var i = 0, arr = []; i < arguments[0]; i++){
                 arr.push(rand.apply(this, Array.prototype.slice.call(arguments, 1)));
             }
@@ -283,7 +325,7 @@ var RBM;
 
         // check if we have any arrays or undefined arguments
             for(var i = 0, arrays = false; i < args.length; i++){
-                if(typeof args[i] == "undefined") return null;
+                if(typeof args[i] === "undefined") return null;
                 if(!arrays && args[i] instanceof Array) arrays = true;
             }
 
@@ -306,4 +348,31 @@ var RBM;
             }
             return arr;
         }
+
+    // WebWorker stuff
+    // Recieves a message containing an object of the form {
+    //      rbm : /* The RBM object */
+    //      cmd : /* The method to call (eg. train, classify) */       
+    //      args : /* An array of arguments to pass to the function */
+    // }
+    // While running, sends back messages containing an object of the form {
+    //      progress_update : /* The percentage completion */
+    // }
+    // On completion, sends back a message containing an object of the form {
+    //      passback : /* The request object */
+    //      result : /* The result of the function */
+    // }
+    if(inWorker){
+        var SELF = self,
+            worker_passback;
+        SELF.addEventListener("message", function(e) {
+            var data = e.data || {};
+            if(data.hasOwnProperty("cmd") && RBM.prototype.hasOwnProperty(data["cmd"]) && typeof RBM.prototype[data["cmd"]] === "function"){
+                var rbm = Object.create(RBM.prototype); // Reconstruct RBM
+                for(var prop in data["rbm"]) rbm[prop] = data["rbm"][prop];
+                worker_passback = data;    // For passing the request back
+                RBM.prototype[data["cmd"]].apply(rbm, data["args"]);   // Run command
+            }
+        }, false);
+    }
 })();
